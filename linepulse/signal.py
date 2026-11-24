@@ -8,6 +8,25 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from image_lab.validation import Invalid, choice, integer, number
 
+from .common import (
+    alias_frequency,
+    common_frequency,
+    critical_settings,
+    evaluate_frequency,
+    find_common_frequency,
+    find_common_frequencies,
+    fingerprint,
+    suggest_common_frequency,
+)
+
+__all__ = [
+    "LUMA", "MAX_IMAGE_BYTES", "alias_frequency", "common_frequency",
+    "critical_settings", "decode", "defaults", "evaluate_frequency",
+    "find_common_frequency", "find_common_frequencies", "fingerprint",
+    "manual_fit", "pixels", "practice", "report", "settings",
+    "spectral_line", "suggest_common_frequency",
+]
+
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
 MAX_IMAGE_BYTES = 18 * 1024 * 1024
@@ -122,9 +141,23 @@ def manual_fit(positions, levels, line_us, frequency):
     }, prediction
 
 
-def report(image, config):
+def report(image, config, common_hz=None):
     positions, measured, dark, white = capture_profile(image, config)
     fit, predicted = manual_fit(positions, measured, config["line_us"], config["trial_hz"])
+    common = None
+    common_predicted = None
+    if common_hz is not None:
+        common, common_predicted = manual_fit(positions, measured, config["line_us"], common_hz)
+    rows = []
+    for index, level, fitted, low, high, common_fitted in zip(
+            positions, measured, predicted, dark, white,
+            common_predicted if common_predicted is not None else [None] * len(positions)):
+        rows.append({
+            "index": int(index), "time_us": float(index * config["line_us"]),
+            "measured": float(level), "fit": float(fitted),
+            "common_fit": None if common_fitted is None else float(common_fitted),
+            "dark_fraction": float(low), "white_fraction": float(high),
+        })
     return {
         "summary": {
             "count": len(positions), "mean": float(measured.mean()), "min": float(measured.min()),
@@ -132,11 +165,7 @@ def report(image, config):
             "dark_fraction": float(dark.mean()), "white_fraction": float(white.mean()),
         },
         "spectrum": spectral_line(measured, config["line_us"]), "fit": fit,
-        "lines": [
-            {"index": int(index), "time_us": float(index * config["line_us"]), "measured": float(level),
-             "fit": float(fitted), "dark_fraction": float(low), "white_fraction": float(high)}
-            for index, level, fitted, low, high in zip(positions, measured, predicted, dark, white)
-        ],
+        "common_fit": common, "lines": rows,
     }
 
 

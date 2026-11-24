@@ -2,7 +2,7 @@ const one = selector => document.querySelector(selector);
 const form = one("#settings");
 const canvas = one("#capture");
 const chart = one("#profile");
-const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0};
+const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0, commonResults:null};
 const numeric = ["x","y","w","h","line_us","exposure_us","trial_hz"];
 const fmt = (value, places=1) => value == null ? "—" : Number(value).toFixed(places);
 const escape = value => String(value).replace(/[&<>"']/g, char =>
@@ -64,6 +64,7 @@ async function updateCards() {
 
 async function open(card) {
   state.card = card;
+  state.commonResults = null;
   one("#empty").hidden = true;
   one("#workspace").hidden = false;
   await show(card.active);
@@ -109,6 +110,7 @@ async function show(slot) {
   canvas.style.maxWidth = Math.min(520, photo.width / photo.height * 520) + "px";
   drawCapture();
   renderReports();
+  renderCommon();
 }
 
 function drawCapture() {
@@ -175,16 +177,23 @@ function plots(graph, series, domain, label, selected) {
     context.moveTo(x,pad.top); context.lineTo(x,bottom); context.stroke();
     context.setLineDash([]);
   }
-  for (const {data,color} of series) {
+  for (const {data,color,dash} of series) {
     context.strokeStyle = color;
     context.lineWidth = 1.3;
+    context.setLineDash(dash || []);
     context.beginPath();
+    let started = false;
     data.forEach((value,i) => {
+      if (value == null || !Number.isFinite(value)) {
+        started = false;
+        return;
+      }
       const x = transformX(i), y = transformY(value);
-      if (i === 0) context.moveTo(x,y);
+      if (!started) { context.moveTo(x,y); started = true; }
       else context.lineTo(x,y);
     });
     context.stroke();
+    context.setLineDash([]);
   }
 }
 
@@ -192,11 +201,19 @@ function drawGraphs() {
   if (!state.report) return;
   const rows = state.report.lines;
   const measured = rows.map(item => item.measured), fitted = rows.map(item => item.fit);
-  const all = [...measured,...fitted];
+  const commonFitted = rows.map(item => item.common_fit ?? null);
+  const all = [...measured,...fitted,...commonFitted.filter(value => value != null)];
   const start = rows[0].index, end = rows.at(-1).index;
   const index = state.selected >= start && state.selected <= end && state.selected != null ? state.selected-start : null;
-  plots(chart,[{data:measured,color:"#7fe3cc"},{data:fitted,color:"#ffbf7d"}],
-    [Math.min(...all)-1,Math.max(...all)+1],[String(start),`${end} ${entry().settings.axis==="rows"?"行":"列"}`],index);
+  const series = [
+    {data:measured,color:"#7fe3cc"},
+    {data:fitted,color:"#ffbf7d"},
+  ];
+  if (commonFitted.some(value => value != null)) {
+    series.push({data:commonFitted,color:"#c79bff",dash:commonIsStale() ? [5,4] : []});
+  }
+  plots(chart,series,[Math.min(...all)-1,Math.max(...all)+1],
+    [String(start),`${end} ${entry().settings.axis==="rows"?"行":"列"}`],index);
   const spectrum = state.report.spectrum;
   plots(one("#spectrum"),[{data:spectrum.amplitudes,color:"#7fe3cc"}],
     [0,Math.max(1,...spectrum.amplitudes)*1.07],["0",`${fmt(spectrum.nyquist_hz,0)} Hz`]);
@@ -210,7 +227,8 @@ function renderReports() {
   ];
   one("#metrics").innerHTML = metrics.map(([title,value,unit]) =>
     `<div class="metric"><small>${title}</small><strong>${value}</strong> <em>${unit}</em></div>`).join("");
-  one("#fit-report").textContent = `试放 ${fmt(fit.trial_hz,2)} Hz · 表观 ${fmt(fit.apparent_hz,2)} Hz · 相位 ${fmt(fit.phase_deg)}° · 暗端 ${fmt(100*summary.dark_fraction,2)}% · 亮端 ${fmt(100*summary.white_fraction,2)}%`;
+  one("#fit-report").textContent = `手动试放 ${fmt(fit.trial_hz,2)} Hz · 表观 ${fmt(fit.apparent_hz,2)} Hz · 相位 ${fmt(fit.phase_deg)}° · 暗端 ${fmt(100*summary.dark_fraction,2)}% · 亮端 ${fmt(100*summary.white_fraction,2)}%`
+    + (state.report.common_fit ? ` ｜ 共同试放 ${fmt(state.report.common_fit.trial_hz,2)} Hz · 偏差 ${fmt(state.report.common_fit.error,2)} 级${commonIsStale() ? " · 设置已改，待重新核对" : ""}` : "");
   one("#nyquist").textContent = `上限 ${fmt(spectrum.nyquist_hz,2)} Hz`;
   const area = one("#peaks");
   area.replaceChildren();
@@ -241,7 +259,8 @@ async function selectLine(index) {
   const axis = report.axis === "rows" ? "行" : "列";
   const row = report.line;
   one("#point-reading").textContent = row
-    ? `原图第 ${axis} ${row.index} · t=${fmt(row.time_us,1)} µs · 实测 ${fmt(row.measured,2)} · 试放 ${fmt(row.fit,2)}`
+    ? `原图第 ${axis} ${row.index} · t=${fmt(row.time_us,1)} µs · 实测 ${fmt(row.measured,2)} · 手动试放 ${fmt(row.fit,2)}`
+      + (row.common_fit != null ? ` · 共同试放 ${fmt(row.common_fit,2)}` : "")
     : `原图第 ${axis} ${index} 在选区外。`;
 }
 
@@ -279,6 +298,199 @@ chart.addEventListener("click",guard(async event => {
   await selectLine(rows[Math.round(ratio*(rows.length-1))].index);
 }));
 window.addEventListener("resize",drawGraphs);
+
+const criticalKeys = ["x", "y", "w", "h", "axis", "line_us"];
+
+function commonTrial() {
+  return state.card?.common_trial || null;
+}
+
+function commonChangedSlots(trial = commonTrial()) {
+  if (!trial?.critical || !state.card) return [];
+  return ["a", "b"].filter(slot => {
+    const saved = trial.critical[slot];
+    const current = state.card.photos[slot]?.settings;
+    if (!saved || !current) return false;
+    return criticalKeys.some(key => String(saved[key]) !== String(current[key]));
+  });
+}
+
+function commonIsStale() {
+  return commonChangedSlots().length > 0;
+}
+
+function commonCriteria() {
+  return Object.fromEntries(["min_hz", "max_hz", "min_amplitude", "tolerance_hz"]
+    .map(key => [key, Number(one("#common-form").elements[key].value)]));
+}
+
+function peakDescription(slot, match) {
+  const name = slot === "a" ? "照片 A" : "照片 B";
+  return `${name} 匹配实际峰 ${fmt(match.peak_hz, 2)} Hz · 幅度 ${fmt(match.amplitude, 1)} 级 · 频率差 ${fmt(match.difference_hz, 2)} Hz`;
+}
+
+function renderCommonAdoption() {
+  const area = one("#common-adopted");
+  const trial = commonTrial();
+  if (!trial) {
+    area.replaceChildren();
+    return;
+  }
+  const changed = commonChangedSlots(trial);
+  const match = trial.match || {};
+  const banner = document.createElement("div");
+  banner.className = "adopted-banner" + (changed.length ? " stale" : "");
+  banner.dataset.testid = changed.length ? "common-stale" : "common-adopted-banner";
+  const detail = document.createElement("div");
+  detail.innerHTML = `<strong>已采用共同试放 ${fmt(trial.frequency_hz, 2)} Hz</strong>` +
+    (match.a && match.b ? `<p>${escape(peakDescription("a", match.a))}<br>${escape(peakDescription("b", match.b))}</p>` : "") +
+    (changed.length ? `<p class="stale-warning">${changed.map(s => s.toUpperCase()).join("、")} 的选区、读出方向或每线用时已改动；旧共同试放需重新核对。手动试放仍可继续使用。</p>`
+      : `<p class="ok">两张逐线图和 CSV 已加入紫色共同试放列/曲线。</p>`);
+  const recheck = document.createElement("button");
+  recheck.type = "button";
+  recheck.className = "quiet";
+  recheck.id = "recheck-common";
+  recheck.textContent = changed.length ? "重新核对共同频率" : "按原条件重新搜索";
+  recheck.addEventListener("click", guard(async () => {
+    const criteria = trial.criteria || commonCriteria();
+    for (const [key, value] of Object.entries(criteria)) one("#common-form").elements[key].value = value;
+    await searchCommon(recheck);
+    one("#common-results").scrollIntoView({behavior: "smooth", block: "nearest"});
+  }));
+  banner.append(detail, recheck);
+  area.replaceChildren(banner);
+}
+
+function adoptButton(frequency, text, className="quiet") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.dataset.adoptFrequency = frequency;
+  button.dataset.testid = "common-adopt";
+  button.textContent = text;
+  const synonyms = document.createElement("span");
+  synonyms.className = "visually-hidden";
+  synonyms.textContent = " 采用共同频率 应用共同试放";
+  button.append(synonyms);
+  button.addEventListener("click", guard(() => adoptCommon(frequency, button)));
+  return button;
+}
+
+function renderCommonResults() {
+  const area = one("#common-results");
+  area.replaceChildren();
+  const result = state.commonResults;
+  if (!result) {
+    const hint = document.createElement("p");
+    hint.className = "caption";
+    hint.textContent = "搜索会把每个真实频率分别按 A、B 的每线用时折叠到表观频率；只有两张都找到超门槛实际峰时才列为共同频率。";
+    area.append(hint);
+    return;
+  }
+  if (!result.candidates.length) {
+    const empty = document.createElement("p");
+    empty.className = "no-match";
+    empty.dataset.testid = "common-no-match";
+    empty.textContent = "没有两张同时匹配的共同频率；无匹配或只有单张能对上的频率均不采用。";
+    area.append(empty);
+    return;
+  }
+  const recommended = result.recommended;
+  if (recommended) {
+    const top = document.createElement("div");
+    top.className = "recommend-row";
+    top.dataset.testid = "common-recommendation";
+    const label = document.createElement("strong");
+    label.textContent = `建议：${fmt(recommended.frequency_hz, 2)} Hz`;
+    const reason = document.createElement("span");
+    reason.className = "caption";
+    reason.textContent = `综合两张峰强度与较弱峰明显程度评分 ${fmt(recommended.score, 1)}；较弱峰 ${fmt(recommended.minimum_amplitude, 1)} 级，${recommended.weak_peak_clear ? "仍明显" : "明显程度偏弱"}（相对强度 ${fmt(100 * recommended.weakest_relative_strength, 0)}%，高过噪声底 ${fmt(recommended.weakest_prominence, 1)} 倍）。`;
+    const adopt = adoptButton(recommended.frequency_hz, `采用建议 ${fmt(recommended.frequency_hz, 2)} Hz`, "primary");
+    adopt.id = "adopt-common";
+    top.append(label, reason, adopt);
+    area.append(top);
+  }
+  for (const candidate of result.candidates) {
+    const card = document.createElement("div");
+    card.className = "candidate" + (candidate.recommended ? " recommended" : "");
+    card.dataset.testid = "common-candidate";
+    const heading = document.createElement("div");
+    heading.className = "candidate-heading";
+    const title = document.createElement("strong");
+    title.textContent = `${fmt(candidate.frequency_hz, 2)} Hz`;
+    heading.append(title);
+    if (candidate.recommended) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "建议";
+      heading.append(badge);
+    }
+    const score = document.createElement("span");
+    score.className = "caption";
+    score.textContent = `评分 ${fmt(candidate.score, 1)} · 较弱峰 ${fmt(candidate.minimum_amplitude, 1)} 级`;
+    heading.append(score, adoptButton(candidate.frequency_hz, "采用此频率"));
+    const peaks = document.createElement("div");
+    peaks.className = "match-peaks";
+    for (const slot of ["a", "b"]) {
+      const line = document.createElement("span");
+      line.className = "chip";
+      line.textContent = peakDescription(slot, candidate.matches[slot]);
+      peaks.append(line);
+    }
+    card.append(heading, peaks);
+    area.append(card);
+  }
+}
+
+function renderCommon() {
+  if (!state.card) return;
+  const panel = document.querySelector("#common-frequency, #common-panel");
+  if (panel) panel.hidden = Object.keys(state.card.photos).length < 2;
+  const criteria = commonTrial()?.criteria;
+  if (criteria) {
+    for (const key of ["min_hz", "max_hz", "min_amplitude", "tolerance_hz"]) {
+      one("#common-form").elements[key].value = criteria[key];
+    }
+  }
+  renderCommonAdoption();
+  renderCommonResults();
+}
+
+async function searchCommon(button) {
+  const form = one("#common-form");
+  if (!form.reportValidity()) return;
+  const criteria = commonCriteria();
+  button = button || form.querySelector("button");
+  button.disabled = true;
+  try {
+    state.commonResults = await request(base() + "/common-frequency", "POST",
+      {revision: state.card.revision, ...criteria});
+    renderCommonResults();
+    one("#common-results").scrollIntoView({behavior: "smooth", block: "nearest"});
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function adoptCommon(frequency, button) {
+  const criteria = commonCriteria();
+  if (button) button.disabled = true;
+  try {
+    const card = await request(base() + "/common-trial", "POST", {
+      revision: state.card.revision, ...criteria, frequency_hz: Number(frequency),
+    });
+    state.card = card;
+    await show(state.slot);
+    message("已采用共同试放；两张原图线号不变，CSV 增加 common_fit 列。");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+one("#common-form").addEventListener("submit", event => {
+  event.preventDefault();
+  guard(() => searchCommon())(event);
+});
 
 one("#practice").addEventListener("click",guard(async event => {
   const button = event.currentTarget || one("#practice");

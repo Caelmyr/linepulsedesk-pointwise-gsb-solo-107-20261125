@@ -12,7 +12,8 @@ from .signal import png
 
 def trace_table(result):
     buffer = StringIO(newline="")
-    fields = ("index", "time_us", "measured", "fit", "dark_fraction", "white_fraction")
+    fields = ("index", "time_us", "measured", "fit", "common_fit",
+              "dark_fraction", "white_fraction")
     writer = csv.DictWriter(buffer, fieldnames=fields)
     writer.writeheader()
     writer.writerows(result["lines"])
@@ -45,16 +46,24 @@ def proof(image, entry, result):
         line_y = top + index * (bottom - top) / 5
         canvas.line((first, line_y, last, line_y), fill="#30465a")
     rows = result["lines"]
-    sample_values = [row[key] for row in rows for key in ("measured", "fit")]
+    sample_values = [value for row in rows
+                     for value in (row["measured"], row["fit"], row.get("common_fit"))
+                     if value is not None]
     lo, hi = min(sample_values) - 1.0, max(sample_values) + 1.0
-    for key, color in (("measured", "#8cdaca"), ("fit", "#f3bc79")):
-        points = [(first + i * (last - first) / (len(rows) - 1),
-                   bottom - (row[key] - lo) * (bottom - top) / (hi - lo))
-                  for i, row in enumerate(rows)]
-        canvas.line(points, fill=color, width=2)
+    for key, color in (("measured", "#8cdaca"), ("fit", "#f3bc79"),
+                       ("common_fit", "#c79bff")):
+        if any(row.get(key) is not None for row in rows):
+            points = [(first + i * (last - first) / (len(rows) - 1),
+                       bottom - (row[key] - lo) * (bottom - top) / (hi - lo))
+                      for i, row in enumerate(rows)]
+            canvas.line(points, fill=color, width=2)
     fit = result["fit"]
-    canvas.text((606, 571), f"Trial {fit['trial_hz']:.2f} Hz  |  Residual {fit['error']:.2f}",
+    canvas.text((606, 571), f"Manual {fit['trial_hz']:.2f} Hz  |  Residual {fit['error']:.2f}",
                 font=regular, fill="#adc0cf")
+    common = result.get("common_fit")
+    if common:
+        canvas.text((606, 594), f"Common {common['trial_hz']:.2f} Hz  |  Residual {common['error']:.2f}",
+                    font=regular, fill="#d7bcff")
     return png(sheet)
 
 

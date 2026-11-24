@@ -88,6 +88,22 @@ class Cards:
             self.commit(self.folder(key), card)
             return card
 
+    def save_common_trial(self, key, revision, trial):
+        with self.lock:
+            card = self.read(key, integer(revision, "工作版本", 1))
+            card["common_trial"] = trial
+            card["revision"] += 1
+            self.commit(self.folder(key), card)
+            return card
+
+    def clear_common_trial(self, key, revision):
+        with self.lock:
+            card = self.read(key, integer(revision, "工作版本", 1))
+            card.pop("common_trial", None)
+            card["revision"] += 1
+            self.commit(self.folder(key), card)
+            return card
+
     def photo(self, key, slot):
         if slot not in {"a", "b"}:
             raise Invalid("照片编号必须为 A 或 B")

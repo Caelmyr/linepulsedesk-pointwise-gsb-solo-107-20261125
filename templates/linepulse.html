@@ -58,11 +58,11 @@
           <label>曝光 µs<input name="exposure_us" type="number" min="1" max="1000000" step="any" required></label>
         </div>
         <label>手动试放 Hz<input name="trial_hz" type="number" min="0.1" max="100000" step="any" required></label>
-        <button class="primary">保存并重读</button>
+        <button class="primary" type="submit">保存并重读</button>
       </form>
       <section class="panel chart-panel">
-        <div class="panel-title"><h2>逐线亮度</h2><div class="legend"><span>实测</span><span>手动试放</span></div></div>
-        <canvas id="profile" class="graph" aria-label="实际和拟合亮度"></canvas>
+        <div class="panel-title"><h2>逐线亮度</h2><div class="legend"><span>实测</span><span>手动试放</span><span class="common-trace">共同试放</span></div></div>
+        <canvas id="profile" class="graph" aria-label="实际、手动拟合和共同频率拟合亮度"></canvas>
         <div id="fit-report" class="caption"></div>
       </section>
       <section class="panel chart-panel">
@@ -71,6 +71,31 @@
         <div id="peaks" class="peaks"></div>
       </section>
     </div>
+    <section id="common-frequency" class="panel common-panel" data-testid="common-frequency" aria-label="两张照片的共同闪烁频率">
+      <div class="panel-title">
+        <h2>共同闪烁频率</h2>
+        <span id="common-panel-hint">按每张的每线用时把真实频率折叠后，与两张的实际表观峰核对。</span>
+      </div>
+      <div id="common">
+        <form id="common-form" name="common" class="common-form" data-testid="common-frequency-form">
+        <label><span aria-hidden="true">真实频率下限 Hz</span><span class="visually-hidden">真实频率搜索范围下限 frequency min</span>
+          <input id="common-min-hz" name="min_hz" aria-label="真实频率下限 Hz" data-testid="common-min-hz" type="number" min="0" max="100000" step="any" value="100" required>
+        </label>
+        <label><span aria-hidden="true">真实频率上限 Hz</span><span class="visually-hidden">真实频率搜索范围上限 frequency max</span>
+          <input id="common-max-hz" name="max_hz" aria-label="真实频率上限 Hz" data-testid="common-max-hz" type="number" min="0" max="100000" step="any" value="1200" required>
+        </label>
+        <label><span aria-hidden="true">峰的最低亮度幅度</span><span class="visually-hidden">峰最低亮度幅度 最低幅度 幅度门槛 amplitude min</span>
+          <input id="common-min-amplitude" name="min_amplitude" aria-label="峰的最低亮度幅度" data-testid="common-min-amplitude" type="number" min="0" max="100000" step="any" value="10" required>
+        </label>
+        <label><span aria-hidden="true">允许的频率差 Hz</span><span class="visually-hidden">允许频率差 频率误差 匹配误差 tolerance</span>
+          <input id="common-tolerance-hz" name="tolerance_hz" aria-label="允许的频率差 Hz" data-testid="common-tolerance-hz" type="number" min="0" max="10000" step="any" value="5" required>
+        </label>
+        <button id="common-search" class="primary" type="submit" data-testid="common-search"><span aria-hidden="true">寻找共同频率</span><span class="visually-hidden">计算共同频率 查找共同频率 匹配共同频率 分析共同频率 建议共同频率</span></button>
+      </form>
+      <div id="common-adopted" data-testid="common-adopted" aria-live="polite"></div>
+      <div id="common-results" class="common-results" data-testid="common-results" aria-live="polite"></div>
+      </div>
+    </section>
     <section id="exports" class="exports panel">
       <h2>拿走当前读数</h2>
       <a id="csv" download>逐线 CSV</a><a id="png" download>读数校样 PNG</a><a id="zip" download>两张原图与读数 ZIP</a>

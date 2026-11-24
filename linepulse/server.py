@@ -7,9 +7,9 @@ from pathlib import Path
 from flask import Blueprint, jsonify, render_template, request, send_file, url_for
 
 from image_lab import create_app as preparation_app
-from image_lab.validation import Invalid, integer, object_value
+from image_lab.validation import Invalid, integer, number, object_value
 
-from . import exports, signal
+from . import common, exports, signal
 from .store import Cards
 
 
@@ -56,9 +56,47 @@ def create_app(directory=None):
     def practice():
         return jsonify(cards.demo()), 201
 
+    def present_card(owner):
+        trial = common.adoption_state(owner)
+        if trial is not None:
+            owner["common_trial"] = trial
+            owner["common"] = trial
+            owner["common_hz"] = trial["frequency_hz"]
+            owner["common_frequency_hz"] = trial["frequency_hz"]
+        return owner
+
     @api.route("/cards/<key>", methods=["GET", "PATCH"])
     def card(key):
-        return jsonify(cards.update(key, payload()) if request.method == "PATCH" else cards.read(key))
+        owner = cards.update(key, payload()) if request.method == "PATCH" else cards.read(key)
+        return jsonify(present_card(owner))
+
+    @api.route("/cards/<key>/common-frequency", methods=["GET", "POST"])
+    @api.route("/cards/<key>/common-frequency/search", methods=["GET", "POST"])
+    @api.route("/cards/<key>/common", methods=["GET", "POST"])
+    def common_frequency_search(key):
+        if request.method == "POST":
+            body = request.get_json(silent=True)
+            if body is None:
+                body = {}
+            body = object_value(body, "共同频率参数")
+        else:
+            body = request.args.to_dict()
+        card = cards.read(key, body.get("revision"))
+        _, _, _, found = common_inputs(card, body)
+        return jsonify(revision=card["revision"], **found)
+
+    @api.route("/cards/<key>/common-trial", methods=["POST", "PUT", "PATCH"])
+    @api.route("/cards/<key>/common-frequency/adopt", methods=["POST", "PUT", "PATCH"])
+    @api.route("/cards/<key>/common", methods=["PUT", "PATCH"])
+    def common_trial_save(key):
+        return jsonify(present_card(adopt_body(key)))
+
+    @api.delete("/cards/<key>/common-trial")
+    @api.route("/cards/<key>/common", methods=["DELETE"])
+    def common_trial_clear(key):
+        body = request.get_json(silent=True) or {}
+        revision = integer(body.get("revision", request.args.get("revision")), "工作版本", 1)
+        return jsonify(present_card(cards.clear_common_trial(key, revision)))
 
     @api.get("/cards/<key>/source/<slot>.png")
     def source(key, slot):
@@ -70,7 +108,64 @@ def create_app(directory=None):
             raise Invalid("该测试卡没有选择的照片")
         entry = card["photos"][slot]
         image = signal.pixels(cards.photo(key, slot))
-        return card, entry, image, signal.report(image, entry["settings"])
+        common_trial = common.adoption_state(card)
+        common_hz = common_trial.get("frequency_hz") if common_trial else None
+        result = signal.report(image, entry["settings"], common_hz)
+        if common_trial is not None:
+            result["common_trial"] = common_trial
+        return card, entry, image, result
+
+    def common_inputs(card, body=None):
+        if set(card["photos"]) != {"a", "b"}:
+            raise Invalid("共同闪烁频率需要同一测试卡中有 A、B 两张照片")
+        body = body if isinstance(body, dict) else {}
+        search_body = body.get("search", body.get("criteria", body.get("range", body)))
+        criteria = common.validate_search(search_body)
+        spectra = {}
+        settings = {}
+        for slot in ("a", "b"):
+            entry = card["photos"][slot]
+            image = signal.pixels(cards.photo(card["id"], slot))
+            report = signal.report(image, entry["settings"])
+            spectra[slot] = report["spectrum"]
+            settings[slot] = entry["settings"]
+        found = common.find_common_frequencies(
+            spectra["a"], settings["a"], spectra["b"], settings["b"], criteria)
+        return criteria, spectra, settings, found
+
+    def adopt_body(key):
+        body = payload()
+        revision = integer(body.get("revision"), "工作版本", 1)
+        card = cards.read(key, revision)
+        criteria, spectra, settings, found = common_inputs(card, body)
+        nested = body.get("search") if isinstance(body.get("search"), dict) else body.get("criteria", body.get("range", {}))
+        if not isinstance(nested, dict):
+            nested = {}
+        requested = body.get("frequency_hz", body.get("common_hz", nested.get("frequency_hz", nested.get("common_hz"))))
+        if requested is None and body.get("candidate_index") is not None:
+            index = integer(body.get("candidate_index"), "候选序号", 0, 29)
+            if index >= len(found["candidates"]):
+                raise Invalid("选择的共同频率候选不存在")
+            requested = found["candidates"][index]["frequency_hz"]
+        if requested is None and body.get("adopt_recommended", True):
+            if not found["recommended"]:
+                raise Invalid("没有两张照片共同匹配的频率，不能采用")
+            requested = found["recommended"]["frequency_hz"]
+        frequency = number(requested, "共同试放频率", criteria["min_hz"], criteria["max_hz"])
+        evaluated = common.evaluate_frequency(
+            frequency, spectra["a"], settings["a"], spectra["b"], settings["b"], criteria)
+        if evaluated is None:
+            raise Invalid("该频率在两张照片上都没有超过门槛且对得上的峰，不能作为共同试放")
+        trial = {
+            "frequency_hz": frequency,
+            "criteria": criteria,
+            "match": evaluated,
+            "recommended_hz": found["recommended"]["frequency_hz"] if found["recommended"] else None,
+            "fingerprints": {slot: common.fingerprint(settings[slot]) for slot in ("a", "b")},
+            "critical": {slot: common.critical_settings(settings[slot]) for slot in ("a", "b")},
+            "adopted_from_revision": revision,
+        }
+        return cards.save_common_trial(key, revision, trial)
 
     @api.get("/cards/<key>/trace/<slot>")
     def trace(key, slot):
@@ -98,10 +193,13 @@ def create_app(directory=None):
     @api.get("/cards/<key>/export/observation.zip")
     def bundle(key):
         card = cards.read(key, request.args.get("revision"))
+        common_trial = common.adoption_state(card)
+        common_hz = common_trial.get("frequency_hz") if common_trial else None
         prepared = {}
         for slot, entry in card["photos"].items():
             path = cards.photo(key, slot)
-            prepared[slot] = (path.read_bytes(), signal.report(signal.pixels(path), entry["settings"]))
+            prepared[slot] = (path.read_bytes(),
+                              signal.report(signal.pixels(path), entry["settings"], common_hz))
         return download(exports.package(card, prepared), "application/zip", f"linepulse-r{card['revision']}.zip")
 
     @api.post("/cards/<key>/prepare/<slot>")
