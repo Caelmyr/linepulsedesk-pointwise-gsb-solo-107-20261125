@@ -52,6 +52,7 @@ def settings(value, size):
         "exposure_us": number(value.get("exposure_us"), "曝光时间", 1, 1_000_000),
         "summary": choice(value.get("summary"), "线统计", {"mean", "median"}),
         "trial_hz": number(value.get("trial_hz"), "试放频率", 0.1, 100_000),
+        "correction_cap": correction_cap(value.get("correction_cap", 8)),
     }
 
 
@@ -60,6 +61,7 @@ def defaults(size):
     return settings({
         "x": width // 8, "y": 0, "w": width * 3 // 4, "h": height, "axis": "rows",
         "line_us": 1000, "exposure_us": 500, "summary": "mean", "trial_hz": 760,
+        "correction_cap": 8,
     }, size)
 
 
@@ -122,6 +124,74 @@ def manual_fit(positions, levels, line_us, frequency):
     }, prediction
 
 
+def correction_cap(value):
+    return integer(value, "单像素最大校正灰阶", 1, 64)
+
+
+def line_correction(config, fit, predicted):
+    """Signed per-readout-line offsets that flatten the adopted trial, never overshooting it.
+
+    A line above the trial's flat level is pushed down and a line below it up; the
+    magnitude stays within the trial's own deviation so local brightness differences
+    (bright lettering, dark borders) keep their original ordering.
+    """
+    row_readout = config["axis"] == "rows"
+    length = config["h"] if row_readout else config["w"]
+    start = config["y"] if row_readout else config["x"]
+    if len(predicted) != length:
+        raise Invalid("试放与选区读出线数量不一致")
+    cap = correction_cap(config["correction_cap"])
+    offsets = np.clip(fit["mean"] - predicted, -cap, cap)
+    return start, row_readout, np.asarray(offsets, dtype=np.float64)
+
+
+def corrected_image(image, config, fit, predicted):
+    """Apply one shared offset per readout line inside the frame; leave the rest as is.
+
+    RGB channels receive the same additive amount. Per pixel the offset is trimmed to
+    the headroom so channels not already at 0 or 255 can never land on a saturated
+    value, which means no pixel is clipped and frame-exterior pixels stay untouched.
+    """
+    _, row_readout, wanted = line_correction(config, fit, predicted)
+    x, y, w, h = config["x"], config["y"], config["w"], config["h"]
+    region = image[y:y+h, x:x+w].astype(np.float64)
+    offset = wanted.reshape((h, 1, 1) if row_readout else (1, w, 1))
+    headroom = np.where(offset < 0, region.min(axis=2, keepdims=True) - 1.0,
+                        254.0 - region.max(axis=2, keepdims=True))
+    allowed = np.clip(offset, -np.maximum(headroom, 0.0), np.maximum(headroom, 0.0))
+    # Floor for upward and ceil for downward moves keep rounding inside every bound.
+    rounded = np.where(allowed >= 0, np.floor(region + allowed), np.ceil(region + allowed))
+    adjusted = rounded.astype(np.uint8)
+    result = image.copy()
+    result[y:y+h, x:x+w] = adjusted
+    actual = adjusted.astype(np.int16) - region.astype(np.int16)
+    stats = {
+        "cap": int(config["correction_cap"]),
+        "max_applied": float(np.abs(actual).max()),
+        "mean_abs": float(np.abs(allowed).mean()),
+        "pixels_changed": int(np.count_nonzero(actual.any(axis=2))),
+        "frame_pixels": int(w * h),
+    }
+    return result, stats
+
+
+def line_level(image, config, line_index):
+    """Luma summary of one readout line inside the current frame."""
+    x, y, w, h = config["x"], config["y"], config["w"], config["h"]
+    if config["axis"] == "rows":
+        if not y <= line_index < y + h:
+            return None
+        strip = image[line_index, x:x+w]
+    else:
+        if not x <= line_index < x + w:
+            return None
+        strip = image[y:y+h, line_index]
+    values = strip.astype(np.float64) @ LUMA
+    if config["summary"] == "mean":
+        return float(values.mean())
+    return float(np.median(values))
+
+
 def report(image, config):
     positions, measured, dark, white = capture_profile(image, config)
     fit, predicted = manual_fit(positions, measured, config["line_us"], config["trial_hz"])
@@ -137,7 +207,7 @@ def report(image, config):
              "fit": float(fitted), "dark_fraction": float(low), "white_fraction": float(high)}
             for index, level, fitted, low, high in zip(positions, measured, predicted, dark, white)
         ],
-    }
+    }, predicted
 
 
 def practice():

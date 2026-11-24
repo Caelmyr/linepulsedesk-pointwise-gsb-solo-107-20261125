@@ -2,8 +2,9 @@ const one = selector => document.querySelector(selector);
 const form = one("#settings");
 const canvas = one("#capture");
 const chart = one("#profile");
-const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0};
-const numeric = ["x","y","w","h","line_us","exposure_us","trial_hz"];
+const state = {card:null, slot:null, report:null, image:null, images:{}, view:"original",
+  selected:null, drag:null, draft:null, load:0};
+const numeric = ["x","y","w","h","line_us","exposure_us","trial_hz","correction_cap"];
 const fmt = (value, places=1) => value == null ? "—" : Number(value).toFixed(places);
 const escape = value => String(value).replace(/[&<>"']/g, char =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
@@ -75,6 +76,8 @@ async function show(slot) {
   state.selected = null;
   state.report = null;
   state.image = null;
+  state.images = {};
+  state.view = "original";
   state.drag = null;
   state.draft = null;
   const load = ++state.load;
@@ -83,6 +86,10 @@ async function show(slot) {
   one("#annotation").textContent = `${state.card.synthetic ? "合成练习 · " : ""}r${state.card.revision} · ${photo.name}`;
   one("#photo-size").textContent = `${photo.width} × ${photo.height} px`;
   one("#point-reading").textContent = "点原图或剖面查看实际读出线。拖动原图可重画选区。";
+  renderViewSwitch();
+  renderCorrectionStatus();
+  updateProofLink();
+  one("#capture-title").textContent = "原图取样";
   one("#photo-switch").replaceChildren();
   for (const id of Object.keys(state.card.photos)) {
     const button = document.createElement("button");
@@ -96,19 +103,75 @@ async function show(slot) {
   form.elements.name.value = state.card.name;
   const row = `/linepulse${base()}/`;
   one("#csv").href = stamped(row + `export/${slot}/trace.csv`);
-  one("#png").href = stamped(row + `export/${slot}/proof.png`);
   one("#zip").href = stamped(row + "export/observation.zip");
-  const image = new Image();
-  image.src = row + `source/${slot}.png`;
-  const [report] = await Promise.all([request(stamped(base() + `/trace/${slot}`)), image.decode()]);
+  const original = new Image();
+  original.src = row + `source/${slot}.png`;
+  const jobs = [original.decode(), request(stamped(base() + `/trace/${slot}`))];
+  if (photo.correction) {
+    const corrected = new Image();
+    corrected.src = stamped(row + `corrected/${slot}.png`);
+    jobs.push(corrected.decode().then(() => corrected).catch(() => null));
+  }
+  const [, report, corrected] = await Promise.all(jobs);
   if (load !== state.load) return;
+  state.images.original = original;
+  if (corrected) state.images.corrected = corrected;
+  state.image = original;
   state.report = report;
-  state.image = image;
   canvas.width = photo.width;
   canvas.height = photo.height;
   canvas.style.maxWidth = Math.min(520, photo.width / photo.height * 520) + "px";
+  renderViewSwitch();
   drawCapture();
   renderReports();
+}
+
+function hasCorrection() {
+  return Boolean(state.card && entry()?.correction && state.images.corrected);
+}
+
+function renderViewSwitch() {
+  const holder = one("#view-switch");
+  holder.replaceChildren();
+  if (!hasCorrection()) {
+    holder.hidden = true;
+    return;
+  }
+  holder.hidden = false;
+  for (const [id, label] of [["original", "原图"], ["corrected", "校正图"]]) {
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(state.view === id));
+    button.addEventListener("click", guard(() => switchView(id)));
+    holder.append(button);
+  }
+}
+
+function switchView(view) {
+  if (!state.images[view] || state.view === view) return;
+  state.view = view;
+  state.image = state.images[view];
+  one("#capture-title").textContent = view === "corrected" ? "校正图取样（框内）" : "原图取样";
+  renderViewSwitch();
+  updateProofLink();
+  drawCapture();
+}
+
+function updateProofLink() {
+  if (!state.card) return;
+  const row = `/linepulse${base()}/`;
+  one("#png").href = stamped(row + `export/${state.slot}/proof.png?view=${state.view}`);
+}
+
+function renderCorrectionStatus() {
+  const node = one("#correction-status");
+  const info = entry()?.correction;
+  if (info) {
+    node.textContent = `已采用 r${info.revision}：试放 ${fmt(info.trial_hz, 2)} Hz，单像素上限 ${info.correction_cap} 级，实际最大 ${fmt(info.max_applied, 1)} 级，改动 ${info.pixels_changed}/${info.frame_pixels} 像素。改设置会使本版失效。`;
+  } else {
+    node.textContent = "沿当前读出方向按试放起伏减条纹，框外像素不变，三个通道同量增减且不推到 0/255。";
+  }
 }
 
 function drawCapture() {
@@ -240,9 +303,14 @@ async function selectLine(index) {
   if (stamp !== state.load || index !== state.selected) return;
   const axis = report.axis === "rows" ? "行" : "列";
   const row = report.line;
-  one("#point-reading").textContent = row
-    ? `原图第 ${axis} ${row.index} · t=${fmt(row.time_us,1)} µs · 实测 ${fmt(row.measured,2)} · 试放 ${fmt(row.fit,2)}`
-    : `原图第 ${axis} ${index} 在选区外。`;
+  if (!row) {
+    one("#point-reading").textContent = `原图第 ${axis} ${index} 在选区外。`;
+    return;
+  }
+  const parts = [`原图第 ${axis} ${row.index} · t=${fmt(row.time_us,1)} µs`,
+    `原图实测 ${fmt(row.measured,2)}`, `试放 ${fmt(row.fit,2)}`];
+  if (report.corrected != null) parts.push(`校正图同线 ${fmt(report.corrected,2)}`);
+  one("#point-reading").textContent = parts.join(" · ");
 }
 
 canvas.addEventListener("pointerdown",event => {
@@ -310,6 +378,18 @@ form.addEventListener("submit",event => {
     } finally { button.disabled=false; }
   })(event);
 });
+one("#adopt").addEventListener("click", guard(async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const cap = Number(form.elements.correction_cap.value);
+    const card = await request(base()+`/correction/${state.slot}`,"POST",
+      {revision:state.card.revision, correction_cap:cap});
+    await open(card);
+    switchView("corrected");
+    message("轻校正已采用，可在原图与校正图之间切换对照。");
+  } finally { button.disabled = false; }
+}));
 one("#prepare").addEventListener("click",guard(async () => {
   const prepared = await request(stamped(base()+`/prepare/${state.slot}`),"POST");
   location.assign(prepared.url);

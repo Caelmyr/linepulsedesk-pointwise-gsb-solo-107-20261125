@@ -40,7 +40,12 @@
     <div class="metrics" id="metrics"></div>
     <div class="workspace-grid">
       <section class="panel image-panel">
-        <div class="panel-title"><h2>原图取样</h2><span id="photo-size"></span></div>
+        <div class="panel-title"><h2 id="capture-title">原图取样</h2>
+          <span class="panel-side">
+            <span id="photo-size"></span>
+            <span id="view-switch" class="segmented compact" aria-label="显示原图或校正图" hidden></span>
+          </span>
+        </div>
         <div class="frame"><canvas id="capture" aria-label="照片、实测范围和选中读出线"></canvas></div>
         <div id="point-reading" class="line-readout">点原图或剖面查看实际读出线。拖动原图可重画选区。</div>
       </section>
@@ -58,6 +63,12 @@
           <label>曝光 µs<input name="exposure_us" type="number" min="1" max="1000000" step="any" required></label>
         </div>
         <label>手动试放 Hz<input name="trial_hz" type="number" min="0.1" max="100000" step="any" required></label>
+        <div class="correction-box">
+          <h3>框内轻校正</h3>
+          <label>单像素最多增减灰阶<input name="correction_cap" type="number" min="1" max="64" step="1" required></label>
+          <p id="correction-status" class="caption">沿当前读出方向按试放起伏减条纹，框外像素不变，三个通道同量增减且不推到 0/255。</p>
+          <button id="adopt" type="button" class="quiet">采用本版轻校正</button>
+        </div>
         <button class="primary">保存并重读</button>
       </form>
       <section class="panel chart-panel">

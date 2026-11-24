@@ -42,6 +42,12 @@ input::file-selector-button{color:var(--text);background:#22394b;border:0;border
 .primary:disabled,.quiet:disabled{opacity:.55}
 .segmented{display:flex;flex-shrink:0;gap:5px}
 .segmented button[aria-pressed=true]{background:#224757;border-color:#56a8a8}
+.segmented.compact button{padding:5px 10px;font-size:12px}
+.panel-side{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.correction-box{border:1px solid #2c4657;border-radius:9px;padding:11px;background:#0d1a28;display:grid;gap:8px}
+.correction-box h3{font-size:13px;font-weight:680;margin:0}
+.correction-box .caption{line-height:1.55}
+.correction-box .quiet{width:100%}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
 .metric{padding:12px;background:#101d2a;border:1px solid var(--line);border-radius:9px}

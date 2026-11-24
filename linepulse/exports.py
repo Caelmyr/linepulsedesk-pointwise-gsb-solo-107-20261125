@@ -19,14 +19,20 @@ def trace_table(result):
     return buffer.getvalue().encode("utf-8")
 
 
-def proof(image, entry, result):
+def proof(image, entry, result, view="original"):
     sheet = Image.new("RGB", (1120, 670), "#0c1521")
     canvas = ImageDraw.Draw(sheet)
     regular = ImageFont.load_default(size=16)
     headline = ImageFont.load_default(size=26)
     canvas.text((32, 32), "LINEPULSE / SENSOR READOUT", font=headline, fill="#edf3f8")
-    canvas.text((32, 72), f"{entry['width']} x {entry['height']} px  |  {entry['settings']['line_us']:.2f} us per line",
+    view_label = "Corrected (in-frame light correction)" if view == "corrected" else "Original"
+    canvas.text((32, 72), f"{entry['width']} x {entry['height']} px  |  {entry['settings']['line_us']:.2f} us per line  |  {view_label}",
                 font=regular, fill="#adc0cf")
+    correction = entry.get("correction")
+    if view == "corrected" and correction:
+        canvas.text((32, 92),
+                    f"Trial {correction['trial_hz']:.2f} Hz  |  per-pixel cap {correction['correction_cap']}  |  applied max {correction['max_applied']:.1f}  |  pixels {correction['pixels_changed']}/{correction['frame_pixels']}",
+                    font=regular, fill="#8cdaca")
     thumbnail = Image.fromarray(image)
     thumbnail.thumbnail((522, 490))
     canvas.rounded_rectangle((26, 116, 556, 618), radius=12, fill="#112031")

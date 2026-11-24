@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from threading import RLock
+from time import time_ns
 from uuid import uuid4
 import json
 
@@ -27,6 +28,8 @@ class Cards:
             card = json.loads((self.folder(key) / "card.json").read_text())
             if revision is not None and integer(revision, "工作版本", 1) != card["revision"]:
                 raise Conflict("当前测试卡已有改动，请重新打开")
+            for entry in card["photos"].values():
+                entry["settings"].setdefault("correction_cap", 8)
             return card
 
     @staticmethod
@@ -81,12 +84,51 @@ class Cards:
                 entry = card["photos"][slot]
                 confidence = object_value(value, "照片设置")
                 entry["settings"] = signal.settings({**entry["settings"], **confidence}, (entry["width"], entry["height"]))
+                self._drop_correction(self.folder(key), slot, entry)
             card.update(name=name, revision=card["revision"] + 1,
                         active=payload.get("active", card["active"]))
             if card["active"] not in card["photos"]:
                 raise Invalid("选中的相片不存在")
             self.commit(self.folder(key), card)
             return card
+
+    def adopt_correction(self, key, revision, slot, settings, corrected_png, stats):
+        """Persist one adopted light correction; the original photo stays untouched."""
+        with self.lock:
+            folder = self.folder(key)
+            card = self.read(key, integer(revision, "工作版本", 1))
+            if slot not in card["photos"]:
+                raise Invalid("该测试卡没有选择的照片")
+            entry = card["photos"][slot]
+            entry["settings"] = signal.settings(
+                {**entry["settings"], **settings}, (entry["width"], entry["height"]))
+            temporary = folder / (uuid4().hex + ".png.tmp")
+            temporary.write_bytes(corrected_png)
+            temporary.replace(folder / f"corrected-{slot}.png")
+            entry["correction"] = {
+                "revision": card["revision"] + 1, "adopted_ns": time_ns(),
+                "trial_hz": entry["settings"]["trial_hz"],
+                "correction_cap": entry["settings"]["correction_cap"], **stats,
+            }
+            card["revision"] += 1
+            self.commit(folder, card)
+            return card
+
+    @staticmethod
+    def _drop_correction(folder, slot, entry):
+        entry.pop("correction", None)
+        (folder / f"corrected-{slot}.png").unlink(missing_ok=True)
+
+    def corrected_photo(self, key, slot):
+        if slot not in {"a", "b"}:
+            raise Invalid("照片编号必须为 A 或 B")
+        folder = self.folder(key)
+        path = folder / f"corrected-{slot}.png"
+        record = json.loads((folder / "card.json").read_text())
+        entry = record["photos"].get(slot)
+        if not entry or "correction" not in entry or not path.is_file():
+            raise Invalid("这张照片还没有采用轻校正")
+        return path
 
     def photo(self, key, slot):
         if slot not in {"a", "b"}:
