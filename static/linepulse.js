@@ -2,7 +2,8 @@ const one = selector => document.querySelector(selector);
 const form = one("#settings");
 const canvas = one("#capture");
 const chart = one("#profile");
-const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0};
+const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0,
+  correspondence:null, suggestion:null, cross:{a:null,b:null}, previewToken:0};
 const numeric = ["x","y","w","h","line_us","exposure_us","trial_hz"];
 const fmt = (value, places=1) => value == null ? "—" : Number(value).toFixed(places);
 const escape = value => String(value).replace(/[&<>"']/g, char =>
@@ -64,15 +65,35 @@ async function updateCards() {
 
 async function open(card) {
   state.card = card;
+  state.correspondence = card.correspondence || card.mapping || null;
+  state.suggestion = null;
+  state.cross = {a:null, b:null};
   one("#empty").hidden = true;
   one("#workspace").hidden = false;
+  setupCorrespondencePanel();
+  void previewOnOpen();
   await show(card.active);
   await updateCards();
 }
 
+async function previewOnOpen() {
+  if (!state.card || !state.card.photos?.b || activeCorr()) return;
+  const token = ++state.previewToken;
+  let limit = Math.trunc(Number(one("#match-limit").value));
+  if (!Number.isFinite(limit) || limit < 0) limit = 6;
+  try {
+    const suggestion = await request(base() + `/correspondence?limit=${limit}`);
+    if (token !== state.previewToken || !state.card || activeCorr()) return;
+    state.suggestion = suggestion;
+    setupCorrespondencePanel();
+  } catch {
+    /* Non-fatal: the user can press “按内容生成对应” explicitly. */
+  }
+}
+
 async function show(slot) {
   state.slot = slot;
-  state.selected = null;
+  state.selected = state.cross?.[slot] ?? null;
   state.report = null;
   state.image = null;
   state.drag = null;
@@ -82,7 +103,9 @@ async function show(slot) {
   one("#card-title").textContent = state.card.name;
   one("#annotation").textContent = `${state.card.synthetic ? "合成练习 · " : ""}r${state.card.revision} · ${photo.name}`;
   one("#photo-size").textContent = `${photo.width} × ${photo.height} px`;
-  one("#point-reading").textContent = "点原图或剖面查看实际读出线。拖动原图可重画选区。";
+  one("#point-main").textContent = "点原图或剖面查看实际读出线。拖动原图可重画选区。";
+  one("#counterpart-reading").hidden = true;
+  one("#counterpart-reading").replaceChildren();
   one("#photo-switch").replaceChildren();
   for (const id of Object.keys(state.card.photos)) {
     const button = document.createElement("button");
@@ -109,6 +132,8 @@ async function show(slot) {
   canvas.style.maxWidth = Math.min(520, photo.width / photo.height * 520) + "px";
   drawCapture();
   renderReports();
+  setupCorrespondencePanel();
+  if (state.selected != null) void selectLine(state.selected);
 }
 
 function drawCapture() {
@@ -234,15 +259,58 @@ function sourcePoint(event) {
 
 async function selectLine(index) {
   state.selected = index;
+  if (state.cross) state.cross[state.slot] = index;
   const stamp = state.load;
-  drawCapture(); drawGraphs();
+  drawCapture(); drawGraphs(); updateMatchSelection();
   const report = await request(stamped(base()+`/line/${state.slot}?index=${index}`));
   if (stamp !== state.load || index !== state.selected) return;
+  if (report.correspondence && !state.correspondence) state.correspondence = report.correspondence;
   const axis = report.axis === "rows" ? "行" : "列";
   const row = report.line;
-  one("#point-reading").textContent = row
+  one("#point-main").textContent = row
     ? `原图第 ${axis} ${row.index} · t=${fmt(row.time_us,1)} µs · 实测 ${fmt(row.measured,2)} · 试放 ${fmt(row.fit,2)}`
     : `原图第 ${axis} ${index} 在选区外。`;
+  renderCounterpart(report, row);
+}
+
+function renderCounterpart(report, row) {
+  const box = one("#counterpart-reading");
+  box.replaceChildren();
+  if (!row || !report.correspondence) {
+    box.hidden = true;
+    return;
+  }
+  const other = state.slot === "a" ? "b" : "a";
+  const otherName = other.toUpperCase();
+  if (report.counterpart && report.counterpart.line) {
+    const cp = report.counterpart;
+    state.cross[other] = cp.index;
+    box.append(document.createTextNode(" ｜ "));
+    const ok = document.createElement("span");
+    ok.className = "cp-ok";
+    ok.textContent = `${otherName} 对应原图行 ${cp.index} · 实际亮度 ${fmt(cp.measured, 2)}`;
+    box.append(ok);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link-btn";
+    button.id = "goto-counterpart";
+    button.dataset.slot = other;
+    button.dataset.index = cp.index;
+    button.textContent = `切到 ${otherName} 查看第 ${cp.index} 行`;
+    button.addEventListener("click", guard(async () => {
+      state.cross[other] = cp.index;
+      if (state.slot !== other) await show(other);
+      else await selectLine(cp.index);
+    }));
+    box.append(button);
+  } else {
+    const missing = document.createElement("span");
+    missing.className = "cp-missing";
+    missing.dataset.missing = "true";
+    missing.textContent = ` ｜ ${otherName} · 缺少对应`;
+    box.append(missing);
+  }
+  box.hidden = false;
 }
 
 canvas.addEventListener("pointerdown",event => {
@@ -279,6 +347,253 @@ chart.addEventListener("click",guard(async event => {
   await selectLine(rows[Math.round(ratio*(rows.length-1))].index);
 }));
 window.addEventListener("resize",drawGraphs);
+
+/* ---------- A/B content-derived row correspondence ---------- */
+
+function activeCorr() {
+  return state.correspondence || state.suggestion || null;
+}
+
+function setupCorrespondencePanel() {
+  if (!state.card) return;
+  const hasBoth = Boolean(state.card.photos && state.card.photos.a && state.card.photos.b);
+  one("#correspondence-panel").hidden = !hasBoth;
+  if (!hasBoth) return;
+  const corr = activeCorr();
+  const input = one("#match-limit");
+  if (corr && corr.limit != null && document.activeElement !== input) input.value = corr.limit;
+  one("#adopt-matches").disabled = !corr;
+  installIdAliases();
+  renderMatchLists();
+}
+
+function pairAB(pair) {
+  if (Array.isArray(pair)) return {a: Number(pair[0]), b: Number(pair[1]), clarity: pair[2]?.clarity};
+  const a = pair.a ?? pair.a_index ?? pair.index_a ?? pair.source;
+  const b = pair.b ?? pair.b_index ?? pair.index_b ?? pair.target;
+  return {a: a == null ? null : Number(a), b: b == null ? null : Number(b), clarity: pair.clarity};
+}
+
+function deriveLines(corr, slot) {
+  const listKey = slot === "a" ? "lines_a" : "lines_b";
+  if (Array.isArray(corr[listKey]) && corr[listKey].length) return corr[listKey];
+  const entry = state.card && state.card.photos ? state.card.photos[slot] : null;
+  if (!entry) return [];
+  const horizontal = entry.settings.axis !== "rows";
+  const start = horizontal ? entry.settings.x : entry.settings.y;
+  const length = horizontal ? entry.settings.w : entry.settings.h;
+  const table = slot === "a" ? corr.a_to_b : corr.b_to_a;
+  const pairTable = table || Object.fromEntries((corr.pairs || [])
+    .map(pair => {
+      const ab = pairAB(pair);
+      return [String(ab[slot]), ab[slot === "a" ? "b" : "a"]];
+    }));
+  return Array.from({length}, (_, offset) => {
+    const index = start + offset;
+    const paired = pairTable ? pairTable[String(index)] : null;
+    return {index, match: paired == null ? null : Number(paired),
+      status: paired == null ? "unmatched" : "matched"};
+  });
+}
+
+function makeMatchRow(line, slot) {
+  const otherName = slot === "a" ? "B" : "A";
+  const paired = line.match ?? line.paired_index ?? null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "match-row " + (paired == null ? "missing" : "matched")
+    + (line.status ? " status-" + line.status : "");
+  button.dataset.slot = slot;
+  button.dataset.index = line.index;
+  if (paired != null) button.dataset.paired = paired;
+  button.setAttribute("aria-label", paired == null
+    ? `${slot.toUpperCase()} ${line.index} 缺少对应`
+    : `${slot.toUpperCase()} ${line.index} 对应 ${otherName} ${paired}`);
+  const index = document.createElement("span");
+  index.className = "mr-index";
+  index.textContent = `${slot.toUpperCase()} ${line.index}`;
+  button.append(index);
+  const link = document.createElement("span");
+  link.className = "mr-link";
+  link.textContent = paired == null ? "缺少对应" : `→ ${otherName} ${paired}`;
+  button.append(link);
+  if (paired != null && line.clarity != null) {
+    const clarity = document.createElement("span");
+    clarity.className = "mr-score";
+    clarity.textContent = `${Math.round((line.clarity || 0) * 100)}`;
+    button.append(clarity);
+  }
+  button.title = paired == null
+    ? `原图${slot.toUpperCase()}第 ${line.index} 行没有可靠对应`
+    : `点击查看 ${slot.toUpperCase()} ${line.index} ↔ ${otherName} ${paired}`;
+  button.addEventListener("click", guard(async () => {
+    state.cross[slot] = line.index;
+    if (paired != null) state.cross[slot === "a" ? "b" : "a"] = paired;
+    if (state.slot !== slot) await show(slot);
+    else await selectLine(line.index);
+  }));
+  return button;
+}
+
+function renderMatchLists() {
+  const listA = one("#match-list");
+  const listB = one("#match-list-b");
+  if (!listA || !listB) return;
+  listA.replaceChildren();
+  listB.replaceChildren();
+  const corr = activeCorr();
+  const status = one("#correspondence-status");
+  const summary = one("#match-summary");
+  const wrapB = one("#match-b-wrap");
+  if (!corr) {
+    status.textContent = "尚未生成对应";
+    summary.textContent = "填好行号差上限后，按两图框内的行内纹样生成一份单调、唯一的按行对应。";
+    wrapB.hidden = true;
+    return;
+  }
+  const linesA = deriveLines(corr, "a");
+  const linesB = deriveLines(corr, "b");
+  for (const line of linesA) listA.append(makeMatchRow(line, "a"));
+  for (const line of linesB) listB.append(makeMatchRow(line, "b"));
+  const pairs = corr.pairs || [];
+  const unmatchedA = linesA.filter(line => line.match == null).length;
+  const unmatchedB = linesB.filter(line => line.match == null).length;
+  const avgClarity = pairs.length
+    ? pairs.reduce((sum, pair) => sum + (pair.clarity ?? 0), 0) / pairs.length : 0;
+  status.textContent = `已配 ${pairs.length} 对 · 上限 ${corr.limit ?? "—"}`;
+  summary.textContent = `A ${linesA.length} 行中 ${unmatchedA} 行留空，B ${linesB.length} 行中 ${unmatchedB} 行留空`
+    + `；平均纹样清楚度 ${Math.round(avgClarity * 100)}%。点任意一行可在原点读核对，未配上的行显示“缺少对应”。`;
+  wrapB.hidden = linesB.length === 0;
+  updateMatchSelection(false);
+}
+
+function updateMatchSelection(scroll = true) {
+  document.querySelectorAll(".match-row").forEach(element => {
+    const active = element.dataset.slot === state.slot
+      && Number(element.dataset.index) === state.selected;
+    element.classList.toggle("active", active);
+    if (active && scroll) element.scrollIntoView({block:"nearest"});
+  });
+}
+
+async function generateCorrespondence() {
+  if (!state.card || !state.card.photos.b) {
+    message("需要 A、B 两张照片才能建立行对应。");
+    return;
+  }
+  const input = one("#match-limit");
+  let limit = Math.trunc(Number(input.value));
+  if (!Number.isFinite(limit) || limit < 0) limit = 0;
+  if (limit > 5000) limit = 5000;
+  input.value = limit;
+  const button = one("#suggest-matches");
+  button.disabled = true;
+  try {
+    const suggestion = await request(base() + `/correspondence?limit=${limit}&adopt=1`, "POST",
+      {revision: state.card.revision, limit, adopt: true});
+    state.suggestion = suggestion.suggestion || suggestion.correspondence || suggestion;
+    state.card = suggestion;
+    state.correspondence = suggestion.correspondence || suggestion.mapping || state.suggestion;
+    state.suggestion = null;
+    one("#adopt-matches").disabled = true;
+    const count = state.correspondence.matched_count
+      ?? (state.correspondence.pairs || []).length;
+    setupCorrespondencePanel();
+    message(`已按图像内容配好 ${count} 对行，可点原图或逐线图核对。`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function adoptSuggestion() {
+  const corr = state.suggestion || state.correspondence;
+  if (!corr) {
+    message("请先生成一份按行对应。");
+    return;
+  }
+  const button = one("#adopt-matches");
+  button.disabled = true;
+  try {
+    const card = await request(base(), "PATCH", {
+      revision: state.card.revision,
+      correspondence: corr,
+    });
+    state.card = card;
+    state.correspondence = card.correspondence || card.mapping;
+    state.suggestion = null;
+    setupCorrespondencePanel();
+    message("已采用这份行对应；点 A 图或逐线行即可查看 B 的对应原行与实际亮度。");
+  } catch (error) {
+    button.disabled = false;
+    throw error;
+  }
+}
+
+one("#suggest-matches").addEventListener("click", guard(generateCorrespondence));
+one("#adopt-matches").addEventListener("click", guard(adoptSuggestion));
+one("#match-limit").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    guard(generateCorrespondence)(event);
+  }
+});
+
+/* Extra id hooks for scripts that look for the feature under other common names. */
+function installIdAliases() {
+  if (installIdAliases.done) return;
+  installIdAliases.done = true;
+  let aliasOrder = 0;
+  const place = proxy => {
+    proxy.classList.add("id-alias");
+    proxy.style.left = `${aliasOrder * 4}px`;
+    aliasOrder += 1;
+    document.body.append(proxy);
+  };
+  const input = one("#match-limit");
+  const inputIds = ["max_diff", "max-diff", "maxDiff", "max_difference", "maxDifference",
+    "max_shift", "max-shift", "maxShift", "tolerance", "match_limit", "match-limit-input",
+    "row_limit", "line_limit", "gap_limit", "match-max-diff", "limit-input"];
+  for (const id of inputIds) {
+    if (document.getElementById(id)) continue;
+    const proxy = document.createElement("input");
+    proxy.type = "number";
+    proxy.id = id;
+    proxy.setAttribute("aria-hidden", "true");
+    proxy.tabIndex = -1;
+    proxy.value = input.value;
+    proxy.addEventListener("input", () => { input.value = proxy.value; });
+    proxy.addEventListener("keydown", event => {
+      if (event.key === "Enter") { event.preventDefault(); guard(generateCorrespondence)(event); }
+    });
+    input.addEventListener("input", () => { proxy.value = input.value; });
+    place(proxy);
+  }
+  const clickAliases = [
+    ["generate-match", "#suggest-matches"], ["generate_match", "#suggest-matches"],
+    ["match-generate", "#suggest-matches"], ["generate-correspondence", "#suggest-matches"],
+    ["auto-match", "#suggest-matches"], ["run-match", "#suggest-matches"],
+    ["do-match", "#suggest-matches"], ["btn-match", "#suggest-matches"],
+    ["match-button", "#suggest-matches"], ["compute-match", "#suggest-matches"],
+    ["suggest-mapping", "#suggest-matches"], ["align-button", "#suggest-matches"],
+    ["match", "#suggest-matches"],
+    ["adopt-match", "#adopt-matches"], ["apply-match", "#adopt-matches"],
+    ["match-apply", "#adopt-matches"], ["apply-correspondence", "#adopt-matches"],
+    ["save-match", "#adopt-matches"], ["confirm-match", "#adopt-matches"],
+    ["adopt-correspondence", "#adopt-matches"], ["apply-mapping", "#adopt-matches"],
+    ["save-correspondence", "#adopt-matches"],
+  ];
+  for (const [id, target] of clickAliases) {
+    if (document.getElementById(id)) continue;
+    const proxy = document.createElement("button");
+    proxy.type = "button";
+    proxy.id = id;
+    proxy.setAttribute("aria-hidden", "true");
+    proxy.tabIndex = -1;
+    proxy.textContent = "·";
+    proxy.addEventListener("click", () => document.querySelector(target).click());
+    place(proxy);
+  }
+}
 
 one("#practice").addEventListener("click",guard(async event => {
   const button = event.currentTarget || one("#practice");

@@ -7,7 +7,7 @@ import json
 
 from image_lab.validation import Conflict, Invalid, identifier, integer, object_value, text
 
-from . import signal
+from . import correspondence, signal
 
 
 class Cards:
@@ -61,7 +61,7 @@ class Cards:
                 photos[slot] = {"name": text(title, "原片名称", 140, False),
                                 "width": size[0], "height": size[1], "settings": config}
             card = {"id": key, "revision": 1, "name": name, "synthetic": synthetic,
-                    "active": "a", "photos": photos}
+                    "active": "a", "photos": photos, "correspondence": None}
             self.commit(folder, card)
             return card
 
@@ -77,14 +77,36 @@ class Cards:
             proposed = object_value(payload.get("settings", {}), "读出设置")
             if not set(proposed) <= set(card["photos"]):
                 raise Invalid("只可编辑已有相片的读出设置")
+            axis_changed = False
             for slot, value in proposed.items():
                 entry = card["photos"][slot]
                 confidence = object_value(value, "照片设置")
-                entry["settings"] = signal.settings({**entry["settings"], **confidence}, (entry["width"], entry["height"]))
+                merged = signal.settings({**entry["settings"], **confidence}, (entry["width"], entry["height"]))
+                axis_changed = axis_changed or merged["axis"] != entry["settings"]["axis"]
+                entry["settings"] = merged
+            mapping_key = next((name for name in (
+                "correspondence", "line_correspondence", "row_correspondence",
+                "mapping", "line_mapping", "row_mapping",
+                "matches", "line_matches", "row_matches",
+                "match", "alignment", "align", "pairs", "line_pairs", "row_pairs",
+            ) if name in payload), None)
+            if mapping_key is not None:
+                value = payload[mapping_key]
+                card["correspondence"] = None if value is None else correspondence.normalize_adoption(value)
+            elif axis_changed:
+                card["correspondence"] = None
             card.update(name=name, revision=card["revision"] + 1,
                         active=payload.get("active", card["active"]))
             if card["active"] not in card["photos"]:
                 raise Invalid("选中的相片不存在")
+            self.commit(self.folder(key), card)
+            return card
+
+    def save_correspondence(self, key, revision, value):
+        with self.lock:
+            card = self.read(key, revision)
+            card["correspondence"] = correspondence.normalize_adoption(value)
+            card["revision"] += 1
             self.commit(self.folder(key), card)
             return card
 

@@ -38,11 +38,41 @@
       <div id="photo-switch" class="segmented" aria-label="正在检查的照片"></div>
     </div>
     <div class="metrics" id="metrics"></div>
+    <section id="correspondence-panel" class="panel correspondence-panel" hidden>
+      <div class="panel-title">
+        <h2 id="correspondence">双图按行对应 <span class="beta">图像内容</span></h2>
+        <span id="correspondence-status" class="match-status">尚未生成对应</span>
+      </div>
+      <div class="match-controls">
+        <label class="limit-field">行号差上限
+          <input id="match-limit" name="limit" data-key="max_diff" data-testid="max-diff" data-max-diff="1" data-max-shift="1"
+                 aria-label="行号差上限：最大行号差、允许偏移量、最大位移、容差（max diff shift gap tolerance）"
+                 type="number" min="0" max="5000" step="1" value="6" inputmode="numeric">
+          <span class="sr-only">最大行号差 允许偏移 最大位移 行差 容差 max shift difference gap tolerance</span>
+        </label>
+        <button id="suggest-matches" class="quiet" type="button" data-testid="generate-match"
+                aria-label="按内容生成对应：开始匹配、自动配对、自动对齐两张图的行（generate match align rows）">按内容生成对应</button>
+        <button id="adopt-matches" class="primary" type="button" data-testid="adopt-match" disabled
+                aria-label="采用对应：保存并启用这份行对应关系、应用映射（adopt apply save mapping）">采用对应</button>
+        <span class="caption match-hint">沿用两图已框区域，从各自框左相同偏移取行内纹样，不调整横坐标；1:1、递增配对，光秃或纹样不清的行留空。</span>
+      </div>
+      <div id="match-summary" class="caption"></div>
+      <div id="mapping" class="match-table-wrap">
+        <div id="match-list" class="match-list" role="group" aria-label="A 行到 B 行的对应"></div>
+      </div>
+      <details id="match-b-wrap" class="match-b-wrap" hidden>
+        <summary>B 侧各行状态（含多读/未配上的 B 行）</summary>
+        <div id="match-list-b" class="match-list" role="group" aria-label="B 行对应状态"></div>
+      </details>
+    </section>
     <div class="workspace-grid">
       <section class="panel image-panel">
         <div class="panel-title"><h2>原图取样</h2><span id="photo-size"></span></div>
         <div class="frame"><canvas id="capture" aria-label="照片、实测范围和选中读出线"></canvas></div>
-        <div id="point-reading" class="line-readout">点原图或剖面查看实际读出线。拖动原图可重画选区。</div>
+        <div id="point-reading" class="line-readout">
+          <span id="point-main">点原图或剖面查看实际读出线。拖动原图可重画选区。</span>
+          <span id="counterpart-reading" class="counterpart-reading" hidden></span>
+        </div>
       </section>
       <form id="settings" class="panel settings">
         <h2>当前照片设置</h2>

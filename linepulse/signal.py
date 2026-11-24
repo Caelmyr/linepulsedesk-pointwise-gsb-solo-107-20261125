@@ -160,3 +160,14 @@ def practice():
         conf = {**defaults((width, height)), "line_us": 1_000_000 / rate, "exposure_us": exposures}
         outputs[slot] = ((width, height), data, conf)
     return outputs
+
+
+def match_lines(image_a, config_a, image_b, config_b, max_diff=6, **kwargs):
+    """Lazy re-export of the content row correspondence engine."""
+    from .correspondence import suggest
+    return suggest(image_a, config_a, image_b, config_b, limit=max_diff, **kwargs)
+
+
+def row_correspondence(image_a, config_a, image_b, config_b, limit=6, **kwargs):
+    from .correspondence import suggest
+    return suggest(image_a, config_a, image_b, config_b, limit=limit, **kwargs)
