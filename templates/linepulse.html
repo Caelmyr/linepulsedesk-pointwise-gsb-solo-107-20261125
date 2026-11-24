@@ -66,6 +66,16 @@
         <div id="fit-report" class="caption"></div>
       </section>
       <section class="panel chart-panel">
+        <div class="panel-title">
+          <h2>短校样</h2>
+          <label class="budget">保留点上限
+            <input id="proof-budget" type="number" min="2" max="5000" step="1" value="240">
+          </label>
+        </div>
+        <canvas id="short-proof" class="graph" aria-label="按真实原图线间距绘制的短校样保留点"></canvas>
+        <div id="proof-report" class="caption">短校样与校样 PNG 使用同一套保留线号，点保留点可回查真实线号。</div>
+      </section>
+      <section class="panel chart-panel">
         <div class="panel-title"><h2>表观频谱</h2><span id="nyquist"></span></div>
         <canvas id="spectrum" class="graph" aria-label="表观频率幅度图"></canvas>
         <div id="peaks" class="peaks"></div>

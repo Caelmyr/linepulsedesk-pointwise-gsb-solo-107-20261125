@@ -2,7 +2,7 @@ const one = selector => document.querySelector(selector);
 const form = one("#settings");
 const canvas = one("#capture");
 const chart = one("#profile");
-const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0};
+const state = {card:null, slot:null, report:null, image:null, selected:null, drag:null, draft:null, load:0, proof:null, proofLoad:0};
 const numeric = ["x","y","w","h","line_us","exposure_us","trial_hz"];
 const fmt = (value, places=1) => value == null ? "—" : Number(value).toFixed(places);
 const escape = value => String(value).replace(/[&<>"']/g, char =>
@@ -77,12 +77,19 @@ async function show(slot) {
   state.image = null;
   state.drag = null;
   state.draft = null;
+  state.proof = null;
+  state.proofLoad = 0;
   const load = ++state.load;
   const photo = entry();
   one("#card-title").textContent = state.card.name;
   one("#annotation").textContent = `${state.card.synthetic ? "合成练习 · " : ""}r${state.card.revision} · ${photo.name}`;
   one("#photo-size").textContent = `${photo.width} × ${photo.height} px`;
   one("#point-reading").textContent = "点原图或剖面查看实际读出线。拖动原图可重画选区。";
+  const proofBudget = one("#proof-budget");
+  proofBudget.value = 240;
+  proofBudget.max = photo.settings.axis === "rows" ? photo.height : photo.width;
+  one("#proof-report").classList.remove("error");
+  one("#proof-report").textContent = "短校样与校样 PNG 使用同一套保留线号，点保留点可回查真实线号。";
   one("#photo-switch").replaceChildren();
   for (const id of Object.keys(state.card.photos)) {
     const button = document.createElement("button");
@@ -109,6 +116,7 @@ async function show(slot) {
   canvas.style.maxWidth = Math.min(520, photo.width / photo.height * 520) + "px";
   drawCapture();
   renderReports();
+  loadShortProof();
 }
 
 function drawCapture() {
@@ -200,6 +208,119 @@ function drawGraphs() {
   const spectrum = state.report.spectrum;
   plots(one("#spectrum"),[{data:spectrum.amplitudes,color:"#7fe3cc"}],
     [0,Math.max(1,...spectrum.amplitudes)*1.07],["0",`${fmt(spectrum.nyquist_hz,0)} Hz`]);
+  drawShortProof();
+}
+
+function proofQuery() {
+  const params = new URLSearchParams();
+  const budgetInput = one("#proof-budget");
+  const budget = Math.trunc(Number(budgetInput.value));
+  if (Number.isFinite(budget)) params.set("budget", String(Math.max(2, budget)));
+  if (state.selected != null) params.set("anchor", String(state.selected));
+  return params;
+}
+
+async function loadShortProof() {
+  if (!state.report) return;
+  const load = ++state.proofLoad;
+  const params = proofQuery();
+  // Keep the PNG download on exactly the same parameters, so the link can
+  // never silently serve an older retained set while the panel shows an error.
+  one("#png").href = stamped(base() + `/export/${state.slot}/proof.png`) + "&" + params.toString();
+  const url = stamped(base() + `/shortproof/${state.slot}`) + "&" + params.toString();
+  let proof;
+  try {
+    proof = await request(url);
+  } catch (error) {
+    if (load === state.proofLoad) {
+      state.proof = null;
+      const note = one("#proof-report");
+      note.classList.add("error");
+      note.textContent = error.message;
+      drawShortProof();
+    }
+    return;
+  }
+  if (load !== state.proofLoad) return;
+  state.proof = proof;
+  const note = one("#proof-report");
+  note.classList.remove("error");
+  const axis = entry().settings.axis === "rows" ? "行" : "列";
+  const pinned = proof.pinned.map(index => `${axis}${index}`).join("、");
+  const anchorText = proof.anchor == null ? "" : ` · 点选 ${axis}${proof.anchor}`;
+  note.textContent = proof.complete
+    ? `预算 ${proof.budget} 点不少于全部 ${proof.line_count} 条，已保留全部真实读出线（${pinned} 同条只算一次${anchorText}）。`
+    : `保留 ${proof.retained.length}/${proof.line_count} 条真实${axis} · 必保 ${pinned}${anchorText} · 首尾与点选同条只算一次`;
+  drawShortProof();
+}
+
+function drawShortProof() {
+  const graph = one("#short-proof");
+  const proof = state.proof;
+  const context = graph.getContext("2d");
+  const bounds = graph.getBoundingClientRect();
+  const width = bounds.width, height = bounds.height;
+  if (width < 80 || height < 45) return;
+  const ratio = window.devicePixelRatio || 1;
+  graph.width = Math.round(width * ratio);
+  graph.height = Math.round(height * ratio);
+  context.scale(ratio, ratio);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#a9bacb";
+  context.strokeStyle = "#26384a";
+  context.font = "10px monospace";
+  const pad = {left:37, right:13, top:10, bottom:24};
+  const right = width - pad.right;
+  const bottom = height - pad.bottom;
+  if (!proof || !proof.points.length) {
+    context.fillStyle = "#8295a6";
+    context.fillText("短校样暂不可用", pad.left, (height + 4) / 2);
+    return;
+  }
+  const rows = state.report.lines;
+  const start = rows[0].index, end = rows.at(-1).index;
+  const span = Math.max(end - start, 1);
+  const values = proof.points.flatMap(row => [row.measured, row.fit]);
+  const lo = Math.min(...values) - 1, hi = Math.max(...values) + 1;
+  const transformX = lineIndex => pad.left + (lineIndex - start) * (right - pad.left) / span;
+  const transformY = value => bottom - (value - lo) * (bottom - pad.top) / Math.max(.01, hi - lo);
+  for (let i = 0; i < 5; i++) {
+    const value = lo + (hi - lo) * i / 4;
+    const y = transformY(value);
+    context.beginPath();
+    context.moveTo(pad.left, y); context.lineTo(right, y); context.stroke();
+    context.fillText(fmt(value,0),6,y+3);
+  }
+  const axis = entry().settings.axis === "rows" ? "行" : "列";
+  context.fillText(`${axis}${start}`,pad.left,height-5);
+  context.textAlign = "right"; context.fillText(`${axis}${end}`,right,height-5); context.textAlign = "left";
+  if (state.selected != null && state.selected >= start && state.selected <= end) {
+    const x = transformX(state.selected);
+    context.strokeStyle = "#d2e2ee";
+    context.setLineDash([4,3]);
+    context.beginPath();
+    context.moveTo(x,pad.top); context.lineTo(x,bottom); context.stroke();
+    context.setLineDash([]);
+  }
+  const pinned = new Set(proof.pinned);
+  for (const [key, color] of [["measured","#7fe3cc"],["fit","#ffbf7d"]]) {
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = 1.3;
+    context.beginPath();
+    proof.points.forEach((row, i) => {
+      const x = transformX(row.index), y = transformY(row[key]);
+      if (i === 0) context.moveTo(x,y);
+      else context.lineTo(x,y);
+    });
+    context.stroke();
+    for (const row of proof.points) {
+      const x = transformX(row.index), y = transformY(row[key]);
+      context.beginPath();
+      context.arc(x, y, pinned.has(row.index) ? 3.2 : 2, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
 }
 
 function renderReports() {
@@ -236,6 +357,7 @@ async function selectLine(index) {
   state.selected = index;
   const stamp = state.load;
   drawCapture(); drawGraphs();
+  loadShortProof();
   const report = await request(stamped(base()+`/line/${state.slot}?index=${index}`));
   if (stamp !== state.load || index !== state.selected) return;
   const axis = report.axis === "rows" ? "行" : "列";
@@ -278,6 +400,22 @@ chart.addEventListener("click",guard(async event => {
   const rows = state.report.lines;
   await selectLine(rows[Math.round(ratio*(rows.length-1))].index);
 }));
+one("#short-proof").addEventListener("click",guard(async event => {
+  const proof = state.proof;
+  if (!proof || !proof.points.length) return;
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const rows = state.report.lines;
+  const start = rows[0].index, end = rows.at(-1).index;
+  const padLeft = 37, padRight = 13;
+  const fraction = Math.min(1,Math.max(0,(event.clientX-bounds.left-padLeft)/(bounds.width-padLeft-padRight)));
+  const lineIndex = start + fraction * Math.max(end - start, 1);
+  let nearest = proof.points[0].index;
+  for (const row of proof.points) {
+    if (Math.abs(row.index - lineIndex) < Math.abs(nearest - lineIndex)) nearest = row.index;
+  }
+  await selectLine(nearest);
+}));
+one("#proof-budget").addEventListener("change",guard(() => loadShortProof()));
 window.addEventListener("resize",drawGraphs);
 
 one("#practice").addEventListener("click",guard(async event => {

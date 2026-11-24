@@ -9,7 +9,7 @@ from flask import Blueprint, jsonify, render_template, request, send_file, url_f
 from image_lab import create_app as preparation_app
 from image_lab.validation import Invalid, integer, object_value
 
-from . import exports, signal
+from . import exports, shortproof, signal
 from .store import Cards
 
 
@@ -77,6 +77,16 @@ def create_app(directory=None):
         owner, _, _, result = reading(key, slot)
         return jsonify(revision=owner["revision"], **result)
 
+    def short_query():
+        return shortproof.budget_value(request.args.get("budget")), \
+            shortproof.anchor_value(request.args.get("anchor"))
+
+    @api.get("/cards/<key>/shortproof/<slot>")
+    def short_trace(key, slot):
+        owner, _, _, result = reading(key, slot)
+        proof = shortproof.build_short_proof(result["lines"], *short_query())
+        return jsonify(revision=owner["revision"], **proof)
+
     @api.get("/cards/<key>/line/<slot>")
     def point(key, slot):
         owner, entry, _, result = reading(key, slot)
@@ -93,7 +103,8 @@ def create_app(directory=None):
     @api.get("/cards/<key>/export/<slot>/proof.png")
     def plate(key, slot):
         _, entry, image, result = reading(key, slot)
-        return download(exports.proof(image, entry, result), "image/png", f"readout-{slot}.png")
+        proof = shortproof.build_short_proof(result["lines"], *short_query())
+        return download(exports.proof(image, entry, result, proof), "image/png", f"readout-{slot}.png")
 
     @api.get("/cards/<key>/export/observation.zip")
     def bundle(key):
