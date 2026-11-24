@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>LinePulse Desk · 条纹测量台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='linepulse.css') }}">
+  <script type="module" src="{{ url_for('static', filename='linepulse.js') }}"></script>
+</head>
+<body>
+<header class="masthead">
+  <a class="identity" href="/">
+    <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <span>LinePulse <b>Desk</b><small>条纹测量台</small></span>
+  </a>
+  <div class="top-actions"><a href="/prepare">照片准备</a><button id="practice" class="primary">打开合成练习</button></div>
+</header>
+<main>
+  <aside class="library">
+    <h2>测试卡</h2>
+    <div id="cards" class="cards"></div>
+    <form id="new-card" class="panel">
+      <h2>导入拍摄</h2>
+      <label>名称<input name="name" maxlength="80" required placeholder="例如 灯板短曝"></label>
+      <label>照片 A<input name="a" type="file" accept="image/*" required></label>
+      <label>照片 B<span>可选</span><input name="b" type="file" accept="image/*"></label>
+      <button class="quiet">建立测试卡</button>
+    </form>
+  </aside>
+  <section id="empty" class="empty">
+    <h1>从原片读出条纹</h1>
+    <p>导入一张拍摄或打开合成练习，框选同一亮面，查看逐线亮度和表观频率。</p>
+  </section>
+  <section id="workspace" hidden>
+    <div class="heading">
+      <div><h1 id="card-title"></h1><p id="annotation"></p></div>
+      <div id="photo-switch" class="segmented" aria-label="正在检查的照片"></div>
+    </div>
+    <div class="metrics" id="metrics"></div>
+    <div class="workspace-grid">
+      <section class="panel image-panel">
+        <div class="panel-title"><h2>原图取样</h2><span id="photo-size"></span></div>
+        <div class="frame"><canvas id="capture" aria-label="照片、实测范围和选中读出线"></canvas></div>
+        <div id="point-reading" class="line-readout">点原图或剖面查看实际读出线。拖动原图可重画选区。</div>
+      </section>
+      <form id="settings" class="panel settings">
+        <h2>当前照片设置</h2>
+        <label>测试卡名称<input name="name" maxlength="80" required></label>
+        <div class="two">
+          <label>起点 X<input name="x" type="number" min="0" required></label>
+          <label>起点 Y<input name="y" type="number" min="0" required></label>
+          <label>宽 px<input name="w" type="number" min="16" required></label>
+          <label>高 px<input name="h" type="number" min="16" required></label>
+          <label>读出方向<select name="axis"><option value="rows">按行</option><option value="columns">按列</option></select></label>
+          <label>线统计<select name="summary"><option value="mean">平均亮度</option><option value="median">中位亮度</option></select></label>
+          <label>读出 µs/线<input name="line_us" type="number" min="1" max="10000" step="any" required></label>
+          <label>曝光 µs<input name="exposure_us" type="number" min="1" max="1000000" step="any" required></label>
+        </div>
+        <label>手动试放 Hz<input name="trial_hz" type="number" min="0.1" max="100000" step="any" required></label>
+        <button class="primary">保存并重读</button>
+      </form>
+      <section class="panel chart-panel">
+        <div class="panel-title"><h2>逐线亮度</h2><div class="legend"><span>实测</span><span>手动试放</span></div></div>
+        <canvas id="profile" class="graph" aria-label="实际和拟合亮度"></canvas>
+        <div id="fit-report" class="caption"></div>
+      </section>
+      <section class="panel chart-panel">
+        <div class="panel-title"><h2>表观频谱</h2><span id="nyquist"></span></div>
+        <canvas id="spectrum" class="graph" aria-label="表观频率幅度图"></canvas>
+        <div id="peaks" class="peaks"></div>
+      </section>
+    </div>
+    <section id="exports" class="exports panel">
+      <h2>拿走当前读数</h2>
+      <a id="csv" download>逐线 CSV</a><a id="png" download>读数校样 PNG</a><a id="zip" download>两张原图与读数 ZIP</a>
+      <button id="prepare" class="quiet">送原图到照片准备</button>
+    </section>
+  </section>
+</main>
+<div id="toast" role="status" hidden></div>
+</body>
+</html>

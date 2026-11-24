@@ -1,0 +1,16 @@
+name: solo110-linepulse
+services:
+  desk:
+    build:
+      context: .
+      args:
+        LINEPULSE_DEPS_IMAGE: ${LINEPULSE_DEPS_IMAGE:-python:3.11-slim}
+    image: ${LINEPULSE_IMAGE:-solo110-linepulse:1.0}
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:${LINEPULSE_PORT:-19910}:8000"
+    volumes:
+      - measurements:/var/lib/linepulse
+    init: true
+volumes:
+  measurements:
